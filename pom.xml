@@ -3,7 +3,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>tessellator</groupId>
   <artifactId>resilience4clj-ratelimiter</artifactId>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <name>resilience4clj-ratelimiter</name>
   <description>A small Clojure wrapper around the resilience4j RateLimiter module</description>
   <licenses>
@@ -12,10 +12,10 @@
       <url>https://www.eclipse.org/legal/epl-v20.html</url>
     </license>
   </licenses>
-    <scm>
+  <scm>
     <connection>scm:git:git://github.com/tessellator/resilience4clj-ratelimiter.git</connection>
     <developerConnection>scm:git:ssh://git@github.com/tessellator/resilience4clj-ratelimiter.git</developerConnection>
-    <tag>7cd91ad227ecda0e6af42e15d6e1887c9f4f33b3</tag>
+    <tag>b2a75ce8d6b61d19764933438c13f4b66d480c64</tag>
     <url>https://github.com/tessellator/resilience4clj-ratelimiter</url>
   </scm>
   <dependencies>
@@ -27,7 +27,7 @@
     <dependency>
       <groupId>io.github.resilience4j</groupId>
       <artifactId>resilience4j-ratelimiter</artifactId>
-      <version>0.15.0</version>
+      <version>1.2.0</version>
     </dependency>
   </dependencies>
   <build>
