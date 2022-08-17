@@ -1,97 +1,216 @@
 (ns resilience4clj.rate-limiter
   "Functions to create and execute rate limiters."
-  (:refer-clojure :exclude [name])
-  (:require [clojure.spec.alpha :as s])
-  (:import [io.github.resilience4j.ratelimiter
+  (:refer-clojure :exclude [find name reset!])
+  (:require [clojure.core.async :as async]
+            [clojure.string :as str])
+  (:import [io.github.resilience4j.core
+            EventConsumer
+            Registry$EventPublisher]
+           [io.github.resilience4j.core.registry
+            EntryAddedEvent
+            EntryRemovedEvent
+            EntryReplacedEvent]
+           [io.github.resilience4j.ratelimiter
             RateLimiter
+            RateLimiter$EventPublisher
             RateLimiterConfig
             RateLimiterRegistry]
-           [java.time Duration]))
+           [io.github.resilience4j.ratelimiter.event
+            AbstractRateLimiterEvent]
+           [java.time Duration]
+           [java.util Map Optional]))
+
+(set! *warn-on-reflection* true)
+
+(defn- optional-value [^Optional optional]
+  (when (.isPresent optional)
+    (.get optional)))
+
+(defn- name? [val]
+  (or (string? val)
+      (keyword? val)))
+
+(defn- keywordize-enum-value [^Object enum-value]
+  (-> (.toString enum-value)
+      (str/lower-case)
+      (str/replace #"_" "-")
+      (keyword)))
 
 ;; -----------------------------------------------------------------------------
 ;; configuration
-
-(s/def ::timeout-duration nat-int?)
-(s/def ::limit-refresh-period nat-int?)
-(s/def ::limit-for-period nat-int?)
-
-(s/def ::config
-  (s/keys :opt-un [::timeout-duration
-                   ::limit-refresh-period
-                   ::limit-for-period]))
-
-(s/def ::name
-  (s/or :string (s/and string? not-empty)
-        :keyword keyword?))
 
 (defn- build-config [config]
   (let [{:keys [timeout-duration
                 limit-refresh-period
                 limit-for-period]} config]
-   (cond-> (RateLimiterConfig/custom)
+    (cond-> (RateLimiterConfig/custom)
 
-     timeout-duration
-     (.timeoutDuration (Duration/ofMillis timeout-duration))
+      timeout-duration
+      (.timeoutDuration (Duration/ofMillis timeout-duration))
 
-     limit-refresh-period
-     (.limitRefreshPeriod (Duration/ofNanos limit-refresh-period))
+      limit-refresh-period
+      (.limitRefreshPeriod (Duration/ofNanos limit-refresh-period))
 
-     limit-for-period
-     (.limitForPeriod limit-for-period)
+      limit-for-period
+      (.limitForPeriod limit-for-period)
 
-     :always
-     (.build))))
+      :always
+      (.build))))
 
 ;; -----------------------------------------------------------------------------
 ;; registry
 
-(def registry
-  "The global rate limiter and config registry."
+(def default-registry
+  "The global ratelimiter and config registry."
   (RateLimiterRegistry/ofDefaults))
 
 (defn- build-configs-map [configs-map]
   (into {} (map (fn [[k v]] [(clojure.core/name k) (build-config v)]) configs-map)))
 
-(defn configure-registry!
-  "Overwrites the global registry with one that contains the configs-map.
+(defn registry
+  "Creates a registry with default values or a map of name/config-map pairs."
+  ([]
+   (RateLimiterRegistry/ofDefaults))
+  ([configs-map]
+   (let [^Map configs (build-configs-map configs-map)]
+     (RateLimiterRegistry/of configs))))
 
-  configs-map is a map whose keys are names and vals are configs. When a rate
-  limiter is created, you may specify one of the names in this map to use as the
-  config for that rate limiter.
+(defn all-rate-limiters
+  "Gets all the rate limiters in `registry`.
 
-  :default is a special name. It will be used as the config for rate limiters
-  that do not specify a config to use."
-  [configs-map]
-  (alter-var-root (var registry)
-                  (fn [_]
-                    (RateLimiterRegistry/of (build-configs-map configs-map)))))
+  Uses [[default-registry]] if `registry` is not provided."
+  ([]
+   (all-rate-limiters default-registry))
+  ([^RateLimiterRegistry registry]
+   (set (.getAllRateLimiters registry))))
 
-(defn rate-limiter!
-  "Creates or fetches a rate limiter with the specified name and config and
-  stores it in the global registry.
+(defn add-configuration!
+  "Adds `config` to the `registry` under the `name`.
 
-  The config value can be either a config map or the name of a config map stored
-  in the global registry.
-
-  If the rate limiter already exists in the global registry, the config value is
-  ignored."
-  ([name]
-   {:pre [(s/valid? ::name name)]}
-   (.rateLimiter registry (clojure.core/name name)))
+  Uses [[default-registry]] if `registry` is not provided."
   ([name config]
-   {:pre [(s/valid? ::name name)
-          (s/valid? (s/or :name ::name :config ::config) config)]}
-   (if (s/valid? ::name config)
-     (.rateLimiter registry (clojure.core/name name) (clojure.core/name config))
-     (.rateLimiter registry (clojure.core/name name) (build-config config)))))
+   (add-configuration! default-registry name config))
+  ([^RateLimiterRegistry registry name config]
+   (.addConfiguration registry (clojure.core/name name) (build-config config))))
 
-(defn rate-limiter
-  "Creates a rate limiter with the specified name and config."
-  [name config]
-  (RateLimiter/of (clojure.core/name name) (build-config config)))
+(defn find
+  "Finds the rate limiter identified by `name` in `registry`.
+
+  Uses [[default-registry]] if `registry` is not provided."
+  ([name]
+   (find default-registry name))
+  ([^RateLimiterRegistry registry name]
+   (optional-value (.find registry (clojure.core/name name)))))
+
+(defn remove!
+  "Removes the rate limiter identified by `name` from `registry`.
+
+  Uses [[default-registry]] if `registry` is not provided."
+  ([name]
+   (remove! default-registry name))
+  ([^RateLimiterRegistry registry name]
+   (optional-value (.remove registry (clojure.core/name name)))))
+
+(defn replace!
+  "Replaces the rate limiter identified by `name` in `registry` with the specified `rate-limiter`.
+
+  Uses [[default-registry]] if `registry` is not provided."
+  ([name ^RateLimiter rate-limiter]
+   (replace! default-registry name rate-limiter))
+  ([^RateLimiterRegistry registry name ^RateLimiter rate-limiter]
+   (optional-value (.replace registry (clojure.core/name name) rate-limiter))))
 
 ;; -----------------------------------------------------------------------------
-;; execution
+;; registry events
+
+(defn- entry-added-consumer [out-chan]
+  (reify EventConsumer
+    (consumeEvent [_ event]
+      (let [^EntryAddedEvent e event]
+        (async/offer! out-chan
+                      {:event-type (keywordize-enum-value (.getEventType e))
+                       :added-entry ^RateLimiter (.getAddedEntry e)})))))
+
+(defn- entry-removed-consumer [out-chan]
+  (reify EventConsumer
+    (consumeEvent [_ event]
+      (let [^EntryRemovedEvent e event]
+        (async/offer! out-chan
+                      {:event-type (keywordize-enum-value (.getEventType e))
+                       :removed-entry ^RateLimiter (.getRemovedEntry e)})))))
+
+(defn- entry-replaced-consumer [out-chan]
+  (reify EventConsumer
+    (consumeEvent [_ event]
+      (let [^EntryReplacedEvent e event]
+        (async/offer! out-chan
+                      {:event-type (keywordize-enum-value (.getEventType e))
+                       :old-entry ^RateLimiter (.getOldEntry e)
+                       :new-entry ^RateLimiter (.getNewEntry e)})))))
+
+(def registry-event-types
+  "The event types that can be raised by a registry."
+  #{:added
+    :removed
+    :replaced})
+
+(defn emit-registry-events!
+  "Offers registry events to `out-chan`.
+
+  The event types are identified by [[registry-event-types]].
+
+  This function also accepts `:only` and `:exclude` keyword params that are
+  sequences of the event types that should be included or excluded,
+  respectively.
+
+  Uses [[default-registry]] if `registry` is not provided."
+  ([out-chan]
+   (emit-registry-events! default-registry out-chan))
+  ([^RateLimiterRegistry registry out-chan & {:keys [only exclude]
+                                              :or {exclude []}}]
+   (let [events-to-publish (if only (set only)
+                               (apply disj registry-event-types exclude))
+         ^Registry$EventPublisher pub (.getEventPublisher registry)]
+     (when (contains? events-to-publish :added)
+       (.onEntryAdded pub (entry-added-consumer out-chan)))
+     (when (contains? events-to-publish :removed)
+       (.onEntryRemoved pub (entry-removed-consumer out-chan)))
+     (when (contains? events-to-publish :replaced)
+       (.onEntryReplaced pub (entry-replaced-consumer out-chan))))
+   out-chan))
+
+;; -----------------------------------------------------------------------------
+;; creation and lookup
+
+(defn rate-limiter!
+  "Creates or fetches a rate limiter with the specified name and config and 
+   stores it in `registry`.
+
+   The config value can be either a config map or the name of a config map stored
+   in the registry. If the rate limiter already exists in the registry, the 
+   config value is ignored. 
+
+   Uses [[default-registry]] if `registry` is not provided."
+  ([name]
+   (rate-limiter! default-registry name))
+  ([^RateLimiterRegistry registry name]
+   (.rateLimiter registry (clojure.core/name name)))
+  ([^RateLimiterRegistry registry name config]
+   (if (name? config)
+     (.rateLimiter registry (clojure.core/name name) (clojure.core/name config))
+     (let [^RateLimiterConfig cfg (build-config config)]
+       (.rateLimiter registry (clojure.core/name name) cfg)))))
+
+(defn rate-limiter
+  "Creates a rate limiter with the `name` and `config`."
+  ([name]
+   (rate-limiter name {}))
+  ([name config]
+   (let [^RateLimiterConfig cfg (build-config config)]
+     (RateLimiter/of (clojure.core/name name) cfg))))
+
+;; -----------------------------------------------------------------------------
+;; Execution
 
 (defn execute
   "Apply args to f within a context protected by the rate limiter.
@@ -114,10 +233,18 @@
   limit has been exceeded. If the function is not allowed to execute before the
   timeout duration expires, an exception will be thrown."
   [rate-limiter & body]
-  `(let [rl# (if (s/valid? ::name ~rate-limiter)
-               (rate-limiter! (clojure.core/name ~rate-limiter))
-               ~rate-limiter)]
+  `(let [rl# (if (instance? RateLimiter ~rate-limiter)
+               ~rate-limiter
+               (rate-limiter! (clojure.core/name ~rate-limiter)))]
      (execute rl# (fn [] ~@body))))
+
+;; -----------------------------------------------------------------------------
+;; properties
+
+(defn name
+  "Gets the name of the rate limiter."
+  [^RateLimiter rate-limiter]
+  (.getName rate-limiter))
 
 ;; -----------------------------------------------------------------------------
 ;; management
@@ -138,10 +265,72 @@
   [^RateLimiter rate-limiter limit-for-period]
   (.changeLimitForPeriod rate-limiter limit-for-period))
 
-;; -----------------------------------------------------------------------------
-;; properties
+(defn acquire-permission!
+  "Attempts to acquire the specified number of permits from `rate-limiter`.
+   
+   Blocks until all permits are received or the rate limiter timeout duration is
+   exceeded. Returns a value indicating success.
+   
+   The default permit value is 1."
+  ([^RateLimiter rate-limiter]
+   (.acquirePermission rate-limiter))
+  ([^RateLimiter rate-limiter permits]
+   (.acquirePermission rate-limiter permits)))
 
-(defn name
-  "Gets the name of the rate limiter."
+(defn reserve-permission!
+  "Reserves the specified number of permits.
+   
+   Returns the number of nanoseconds you must wait to use the permission. If the
+   number is negative, the request to reserve permission failed. This failure
+   mode may occur if the number of nanoseconds to wait exceeds the rate limiter
+   timeout duration.
+   
+   The default permit value is 1."
+  ([^RateLimiter rate-limiter]
+   (.reservePermission rate-limiter))
+  ([^RateLimiter rate-limiter permits]
+   (.reservePermission rate-limiter permits)))
+
+(defn drain-permissions!
+  "Drains all the permits left in the current period."
   [^RateLimiter rate-limiter]
-  (.getName rate-limiter))
+  (.drainPermissions rate-limiter))
+
+;; -----------------------------------------------------------------------------
+;; rate limiter events
+
+(def event-types
+  #{:success
+    :failure})
+
+(defn- base-event [^AbstractRateLimiterEvent event]
+  {:event-type (keywordize-enum-value (.getEventType event))
+   :rate-limiter-name (.getRateLimiterName event)
+   :creation-time (.getCreationTime event)
+   :number-of-permits (.getNumberOfPermits event)})
+
+(defn- base-consumer [out-chan]
+  (reify EventConsumer
+    (consumeEvent [_ event]
+      (let [^AbstractRateLimiterEvent e event]
+        (async/offer! out-chan
+                      (base-event e))))))
+
+(defn emit-events!
+  "Offers events on `rate-limiter` to `out-chan`.
+
+  The event types are identified by [[event-types]].
+
+  This function also accepts `:only` and `:exclude` keyword params that are
+  sequences of the event types that should be included or excluded,
+  respectively."
+  [^RateLimiter rate-limiter out-chan & {:keys [only exclude]
+                                         :or {exclude []}}]
+  (let [events-to-publish (if only
+                            (set only)
+                            (apply disj event-types exclude))
+        ^RateLimiter$EventPublisher pub (.getEventPublisher rate-limiter)]
+    (when (contains? events-to-publish :success)
+      (.onSuccess pub (base-consumer out-chan)))
+    (when (contains? events-to-publish :failure)
+      (.onFailure pub (base-consumer out-chan)))))
