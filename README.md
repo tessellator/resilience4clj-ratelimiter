@@ -2,11 +2,10 @@
 
 A small Clojure wrapper around the
 [resilience4j RateLimiter module](https://resilience4j.readme.io/docs/ratelimiter).
-Requires Clojure 1.9 or later.
+Requires Clojure 1.5 or later for JDK 8, and Clojure 1.10 or later for JDK 9+.
 
 [![clojars badge](https://img.shields.io/clojars/v/tessellator/resilience4clj-ratelimiter.svg)](https://clojars.org/tessellator/resilience4clj-ratelimiter)
 [![cljdoc badge](https://cljdoc.org/badge/tessellator/resilience4clj-ratelimiter)](https://cljdoc.org/d/tessellator/resilience4clj-ratelimiter/CURRENT)
-
 
 ## Quick Start
 
@@ -39,6 +38,6 @@ use rate limiters.
 
 ## License
 
-Copyright © 2019-2020 Thomas C. Taylor and contributors.
+Copyright © 2019-2020,2022 Thomas C. Taylor and contributors.
 
 Distributed under the Eclipse Public License version 2.0.
